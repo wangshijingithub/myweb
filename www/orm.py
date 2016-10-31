@@ -1,16 +1,21 @@
 ﻿# -*- coding:utf-8 -*-
-import aiomysql, asyncio, logging
+import aiomysql, asyncio, logging, sys
 #from orm import Model, StringField, IntegerField
 
 def log(sql, args=()):
 	logging.info('SQL: %s' %sql)
 
+def create_args_string(num):
+	L = []
+	for n in range(num):
+		L.append('?')
+	return ', '.join(L)
 #建立连接池
 async def create_pool(loop, **kw):
 	logging.info('create database connection pool...')
 	global __pool
 	__pool = await aiomysql.create_pool(
-		host=kw.get('host', 'localhost'),
+		host=kw.get('host', 'localhost'),#'host', '127.0.0.1'
 		port=kw.get('port', 3306),
 		user=kw['user'],
 		password=kw['password'],
@@ -21,6 +26,12 @@ async def create_pool(loop, **kw):
 		minsize=kw.get('minsize', 1),
 		loop=loop
 		)
+async def destory_pool():
+    global __pool
+    if __pool is not None :
+        __pool.close()
+        await __pool.wait_closed()
+
 async def select(sql, args, size=None):
 	log(sql, args)
 	global __pool
@@ -57,12 +68,6 @@ async def execute(sql, args, autocommit=True):
 			raise
 		return affected
 
-def create_args_string(num):
-	L = []
-	for n in range(num):
-		L.append('?')
-	return ', '.join(L)
-
 class Field(object):
 
 	def __init__(self, name, column_type, primary_key, default):
@@ -97,7 +102,7 @@ class TextField(Field):
 
 	def __init__(self, name=None, default=None):
 		super().__init__(name, 'text', False, default)
-
+##################
 class ModelMetaclass(type):
 
 	def __new__(cls, name, bases, attrs):
@@ -113,7 +118,7 @@ class ModelMetaclass(type):
 		primaryKey = None
 		for k, v in attrs.items():
 			if isinstance(v, Field):
-				logging,info(' found mapping: %s ==> %s' %(k, v))
+				logging.info(' found mapping: %s ==> %s' %(k, v))
 				mappings[k] = v
 				if v.primary_key:
 					# 找到主键:
@@ -126,7 +131,7 @@ class ModelMetaclass(type):
 			raise RuntimeError('Primary key not found.')
 		for k in mappings.keys():
 			attrs.pop(k)
-		escaped_field = list(map(lambda f: '`%s`' %f, fields))
+		escaped_fields = list(map(lambda f: '`%s`' %f, fields))
 		attrs['__mappings__'] = mappings #保存属性和列的映射关系
 		attrs['__table__'] = tableName
 		attrs['__primary_key__'] = primaryKey # 主键属性名
@@ -138,20 +143,13 @@ class ModelMetaclass(type):
 		attrs['__delete__'] = 'delete from `%s` where `%s`=?' % (tableName, primaryKey)
 		return type.__new__(cls, name, bases, attrs)
 
-#定义一个User对象，与数据库表users关联
-# class User(Model):
-
-# 	__table__ = 'users'
-
-# 	id = IntegerField(primary_key=True)
-# 	name = StringField()
-#定义Model
+#定义所有ORM映射的基类Model
 class Model(dict, metaclass=ModelMetaclass):
 
 	def __init__(self, **kw):
 		super(Model, self).__init__(**kw)
 
-	def __getattr__(self, kev):
+	def __getattr__(self, key):
 		try:
 			return self[key]
 		except KeyError:
@@ -225,16 +223,51 @@ class Model(dict, metaclass=ModelMetaclass):
 		args.append(self.getValueOrDefault(self.__primary_key__))
 		rows = await execute(self.__insert__, args)
 		if rows !=1:
-			logging.warn('failed to insert record:affected rows: %s' %rows)
+			logging.info('failed to insert record:affected rows: %s' %rows)
 	async def update(self):
 		args = list(map(self.getValue, self.__fields__))
 		args.append(self.getValue(self.__primary_key__))
 		rows = await execute(self.__update__, args)
 		if rows != 1:
-			logging.warn('failed to update by primary key: affected rows: %s' %rows)
+			logging.info('failed to update by primary key: affected rows: %s' %rows)
 
 	async def remove(self):
 		args = [self.getValue(self.__primary_key__)]
 		rows = await execute(self.__delete__, args)
 		if rows != 1:
-			logging.warn('failed to remove by primary key: affected rows: %s' %rows)
+			logging.info('failed to remove by primary key: affected rows: %s' %rows)
+#定义一个User对象，与数据库表users关联
+class User(Model):
+
+	__table__ = 'users'
+
+	id = IntegerField(primary_key=True)
+	name = StringField()
+
+	def show(self):
+		print(1, '__mappings__:', self.__mappings__)
+		print(2, '__table__:', self.__table__)
+		print(3, '__primary_key__:', self.__primary_key__)
+		print(4, '__fields__:', self.__fields__)
+		print(5, '__select__:', self.__select__)
+		print(6, '__insert__:', self.__insert__)
+		print(7, '__update__:', self.__update__)
+		print(8, '__delate__:', self.__delate__)
+
+loop = asyncio.get_event_loop()
+
+async def test():
+	await create_pool(loop=loop, host='localhost', port=3306, user='root', password='1234', db='User')
+	r = await User.findAll()
+	print(1, r)
+	r = await User.find(id='12')
+	print(2, r)
+	# r = await User.find(id='10')
+	# print(3, r)
+	# r = await User.remove(id='10')
+	# await destory_pool()
+
+loop.run_until_complete(test())
+loop.close()
+if loop.is_closed():
+    sys.exit(0)
